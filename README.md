@@ -134,6 +134,8 @@ The model ensures long-term sustainability beyond grant funding.
 - **Ipshit Singh**  
   GitHub: https://github.com/ipshitsingh27  
 
+- **Aditya Mittal**
+  Github: https://github.com/Aditya3960
 ---
 
 ## 🔮 Vision
