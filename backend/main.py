@@ -4,8 +4,19 @@ from services.savings import calculate_spare_change
 from services.yield_engine import generate_daily_yield
 from services.stellar_service import create_wallet, send_payment
 from services.content_service import list_content, unlock_content
+from fastapi.middleware.cors import CORSMiddleware
+
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.post("/login/{user_id}")
 def login(user_id: str):
