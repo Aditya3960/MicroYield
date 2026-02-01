@@ -1,116 +1,103 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app.models.wallet import Wallet
-from app.models.user import User
-from app.services.stellar_service import generate_stellar_wallet
-from app.utils.encryption import encrypt_secret
-from app.utils.dependencies import get_current_user
-from app.services.stellar_service import fund_testnet_account
-from pydantic import BaseModel
-from app.utils.encryption import decrypt_secret
-from app.services.stellar_service import send_xlm
-from app.utils.rounding import calculate_roundoff
-from app.services.stellar_service import mint_usdc_to_vault
-from app.config import VAULT_PUBLIC_KEY
-from app.services.stellar_service import atomic_payment_with_roundoff
+"""
+Improved wallet.py with automatic Soroban deposit after roundoff payment
+"""
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from decimal import Decimal
+from pydantic import BaseModel
+from app.database import SessionLocal
+from app.models.user import User
+from app.models.wallet import Wallet
+from app.utils.dependencies import get_current_user
+from app.utils.encryption import decrypt_secret, encrypt_secret
+from app.services.stellar_service import (
+    generate_stellar_wallet,
+    fund_testnet_account,
+    atomic_payment_with_roundoff,
+    soroban_deposit,  # Import for auto-deposit
+)
+from app.config import VAULT_PUBLIC_KEY
 
 router = APIRouter()
 
+class PaymentRequest(BaseModel):
+    destination: str
+    amount: float
+    roundoff_option: str = "none"
+    
 @router.post("/create")
 def create_wallet(current_user: str = Depends(get_current_user)):
+    """Create a new Stellar wallet for the user"""
     db: Session = SessionLocal()
-
-    # Get user from DB
+    
     user = db.query(User).filter(User.email == current_user).first()
-
-    if not user:
+    existing = db.query(Wallet).filter(Wallet.user_id == user.id).first()
+    
+    if existing:
         db.close()
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Check if wallet already exists
-    existing_wallet = db.query(Wallet).filter(Wallet.user_id == user.id).first()
-    if existing_wallet:
-        db.close()
-        return {
-            "message": "Wallet already exists",
-            "public_key": existing_wallet.public_key
-        }
-
-    # Generate new Stellar wallet
-    wallet_data = generate_stellar_wallet()
-
-    encrypted_secret = encrypt_secret(wallet_data["secret_key"])
-
-    new_wallet = Wallet(
+        raise HTTPException(status_code=400, detail="Wallet already exists")
+    
+    # Generate new Stellar keypair
+    keys = generate_stellar_wallet()
+    encrypted = encrypt_secret(keys["secret_key"])
+    
+    # Save to database
+    wallet = Wallet(
         user_id=user.id,
-        public_key=wallet_data["public_key"],
-        encrypted_secret=encrypted_secret
+        public_key=keys["public_key"],
+        encrypted_secret=encrypted
     )
-
-    db.add(new_wallet)
+    db.add(wallet)
     db.commit()
-    db.refresh(new_wallet)
+    db.refresh(wallet)
     db.close()
-
+    
     return {
-        "message": "Wallet created successfully",
-        "public_key": wallet_data["public_key"]
+        "public_key": keys["public_key"],
+        "message": "Wallet created successfully"
     }
 
 @router.post("/fund")
-def fund_wallet(current_user: str = Depends(get_current_user)):
+def fund_wallet(
+    public_key: str = Query(...),
+    current_user: str = Depends(get_current_user)
+):
+    """Fund wallet with testnet XLM from Friendbot"""
+    try:
+        result = fund_testnet_account(public_key)
+        return {
+            "message": "Wallet funded successfully",
+            "friendbot_response": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/balance")
+def get_balance(current_user: str = Depends(get_current_user)):
+    """Get user's wallet balance"""
     db: Session = SessionLocal()
+    
     user = db.query(User).filter(User.email == current_user).first()
     wallet = db.query(Wallet).filter(Wallet.user_id == user.id).first()
-
+    
     if not wallet:
         db.close()
         raise HTTPException(status_code=404, detail="Wallet not found")
-
-    result = fund_testnet_account(wallet.public_key)
-
+    
     db.close()
-    return result
-
-class SendRequest(BaseModel):
-    destination: str
-    amount: float
-
-@router.post("/send")
-def send_payment(data: SendRequest, current_user: str = Depends(get_current_user)):
-    db: Session = SessionLocal()
-    user = db.query(User).filter(User.email == current_user).first()
-    wallet = db.query(Wallet).filter(Wallet.user_id == user.id).first()
-
-    if not wallet:
-        db.close()
-        raise HTTPException(status_code=404, detail="Wallet not found")
-
-    decrypted_secret = decrypt_secret(wallet.encrypted_secret)
-
-    result = send_xlm(
-        source_secret=decrypted_secret,
-        destination=data.destination,
-        amount=data.amount
-    )
-
-    db.close()
-    return result
+    
+    return {
+        "public_key": wallet.public_key,
+        "message": "Check balance on Stellar Explorer"
+    }
 
 @router.post("/pay")
 def pay(
-    destination: str,
-    amount: float,
-    roundoff_option: str,
-    current_user: str = Depends(get_current_user),
+    payment: PaymentRequest,
+    current_user: str = Depends(get_current_user)
 ):
     db: Session = SessionLocal()
-
-    if roundoff_option not in ["none", "save", "invest"]:
-        db.close()
-        raise HTTPException(status_code=400, detail="Invalid roundoff option")
 
     user = db.query(User).filter(User.email == current_user).first()
     wallet = db.query(Wallet).filter(Wallet.user_id == user.id).first()
@@ -121,35 +108,68 @@ def pay(
 
     decrypted_secret = decrypt_secret(wallet.encrypted_secret)
 
-    # Calculate roundoff first
-    if roundoff_option in ["save", "invest"]:
-        roundoff_amount, rounded_total = calculate_roundoff(amount)
-    else:
-        roundoff_amount = 0
-        rounded_total = amount
+    merchant_amount = Decimal(str(payment.amount))
+    roundoff_amount = Decimal("0")
 
-    # 🔥 Single atomic transaction
-    payment_result = atomic_payment_with_roundoff(
-        source_secret=decrypted_secret,
-        merchant_destination=destination,
-        merchant_amount=amount,
-        vault_destination=VAULT_PUBLIC_KEY,
-        roundoff_amount=roundoff_amount
-    )
+    if payment.roundoff_option == "invest":
+        roundoff_amount = Decimal("3")  # demo logic
 
-    # Record savings in DB only if roundoff happened
-    if roundoff_amount > 0:
-        # Mint USDC if invest selected
-        if roundoff_option == "invest":
-            mint_usdc_to_vault(roundoff_amount)
+    try:
+        payment_result = atomic_payment_with_roundoff(
+            source_secret=decrypted_secret,
+            merchant_destination=payment.destination,
+            merchant_amount=merchant_amount,
+            vault_destination=VAULT_PUBLIC_KEY,
+            roundoff_amount=roundoff_amount
+        )
 
-    db.commit()
+        if not payment_result.get("successful"):
+            db.close()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Payment failed: {payment_result.get('error', 'Unknown error')}"
+            )
+
+        soroban_result = None
+        if roundoff_amount > 0:
+            try:
+                soroban_result = soroban_deposit(
+                    user_secret=decrypted_secret,
+                    amount=int(roundoff_amount)
+                )
+            except Exception as e:
+                print(f"Soroban deposit failed: {e}")
+
+        db.close()
+
+        return {
+            "successful": True,
+            "payment_hash": payment_result["hash"],
+            "merchant_amount": float(merchant_amount),
+            "roundoff_amount": float(roundoff_amount),
+            "total_spent": float(merchant_amount + roundoff_amount),
+            "soroban_deposit_hash": soroban_result.get("hash") if soroban_result else None
+        }
+
+    except Exception as e:
+        db.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/my-wallet")
+def my_wallet(current_user: str = Depends(get_current_user)):
+    """Get current user's wallet info"""
+    db: Session = SessionLocal()
+    
+    user = db.query(User).filter(User.email == current_user).first()
+    wallet = db.query(Wallet).filter(Wallet.user_id == user.id).first()
+    
+    if not wallet:
+        db.close()
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    
     db.close()
-
+    
     return {
-        "payment_hash": payment_result["hash"],
-        "roundoff_saved": roundoff_amount,
-        "rounded_total": rounded_total,
-        "option": roundoff_option,
-        "message": "Atomic payment processed successfully"
+        "public_key": wallet.public_key,
+        "created_at": wallet.created_at.isoformat() if wallet.created_at else None
     }
