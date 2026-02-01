@@ -153,14 +153,18 @@ showCategories();
 // Balance card pulse effect on hover
 const balanceCard = document.querySelector('.yield-fixed');
 if (balanceCard) {
-  balanceCard.addEventListener('mouseenter', () => {
-    yieldAmount.style.transform = 'scale(1.1)';
-    yieldAmount.style.transition = 'transform 0.3s ease';
-  });
-  
-  balanceCard.addEventListener('mouseleave', () => {
-    yieldAmount.style.transform = 'scale(1)';
-  });
+  const yieldAmount = document.querySelector(".yield-fixed .amount");
+
+  if (yieldAmount) {
+    balanceCard.addEventListener('mouseenter', () => {
+      yieldAmount.style.transform = 'scale(1.1)';
+      yieldAmount.style.transition = 'transform 0.3s ease';
+    });
+
+    balanceCard.addEventListener('mouseleave', () => {
+      yieldAmount.style.transform = 'scale(1)';
+    });
+  }
 }
 
 async function loadDashboard() {
