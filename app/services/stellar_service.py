@@ -10,7 +10,7 @@ from app.config import (
 from stellar_sdk import Address
 from decimal import Decimal, ROUND_DOWN
 from app.config import SOROBAN_CONTRACT_ID, SOROBAN_RPC_URL
-from stellar_sdk import Contract
+from stellar_sdk import contract
 from stellar_sdk import Server as SorobanServer
 
 server = Server(HORIZON_URL)
@@ -166,7 +166,7 @@ def soroban_deposit(user_secret: str, amount: int):
     keypair = Keypair.from_secret(user_secret)
     source_account = soroban_server.get_account(keypair.public_key)
 
-    contract = Contract(SOROBAN_CONTRACT_ID)
+    contract = contract(SOROBAN_CONTRACT_ID)
 
     transaction = (
         soroban_server.prepare_transaction(
@@ -202,7 +202,7 @@ def soroban_withdraw(user_secret: str, amount: int):
     keypair = Keypair.from_secret(user_secret)
     source_account = soroban_server.get_account(keypair.public_key)
 
-    contract = Contract(SOROBAN_CONTRACT_ID)
+    contract = contract(SOROBAN_CONTRACT_ID)
 
     transaction = (
         soroban_server.prepare_transaction(
@@ -234,7 +234,7 @@ def soroban_withdraw(user_secret: str, amount: int):
 
 def soroban_get_balance(user_public_key: str):
     soroban_server = SorobanServer(SOROBAN_RPC_URL)
-    contract = Contract(SOROBAN_CONTRACT_ID)
+    contract = contract(SOROBAN_CONTRACT_ID)
 
     source_account = soroban_server.get_account(user_public_key)
 
